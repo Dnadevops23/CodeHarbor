@@ -1,4 +1,4 @@
-name: Python & Node CI/CD
+name: Python & Node CI/CD with SonarQube
 
 on:
   push:
@@ -8,6 +8,8 @@ env:
   REGISTRY: docker.io
   DOCKERHUB_USER: ${{ secrets.DOCKER_USERNAME }}
   DOCKERHUB_PASS: ${{ secrets.DOCKER_PASSWORD }}
+  SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+  REPO_NAME: your-repo-name  # Replace with your actual SonarQube project key
 
 jobs:
   detect-changes:
@@ -39,8 +41,27 @@ jobs:
         TAG=$(git rev-parse --short HEAD)
         echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
+  sonarqube-analysis:
+    name: SonarQube Code Quality
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: SonarQube Scan
+      uses: SonarSource/sonarqube-scan-action@v5.3.1
+      with:
+        args: >
+          -Dsonar.projectKey=${{ env.REPO_NAME }}
+          -Dsonar.sources=.
+          -Dsonar.python.xunit.reportPaths=backend-python/junit.xml
+          -Dsonar.javascript.lcov.reportPaths=frontend-node/coverage/lcov.info
+
+    - name: Wait for Quality Gate Result
+      uses: OpsVerseIO/sonarqube-quality-gate-action@0.3.0-ALPHA-2
+
   python-app:
-    needs: [version, detect-changes]
+    needs: [version, detect-changes, sonarqube-analysis]
     if: needs.detect-changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     defaults:
@@ -66,7 +87,7 @@ jobs:
     - name: Install dependencies & run tests
       run: |
         pip install -r requirements.txt
-        pytest
+        pytest --junitxml=junit.xml
 
     - name: Build Docker image (Python)
       run: |
@@ -85,7 +106,7 @@ jobs:
         docker push $DOCKERHUB_USER/python-app:latest
 
   node-app:
-    needs: [version, detect-changes]
+    needs: [version, detect-changes, sonarqube-analysis]
     if: needs.detect-changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     defaults:
@@ -111,7 +132,7 @@ jobs:
     - name: Install dependencies & run tests
       run: |
         npm ci
-        npm test
+        npm test -- --coverage --coverageReporters=lcov
 
     - name: Build Docker image (Node)
       run: |
