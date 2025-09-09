@@ -1,17 +1,45 @@
 # Stage 1: Builder
-FROM python:3.10-slim as builder
+# Use the latest Python 3.10 Alpine image
+FROM python:3.10-alpine AS builder
+#Switch if compactability
+#FROM python:3.10-slim  AS builder
+
+# Install build dependencies for common Python libraries.
+RUN apk add --no-cache libpq-dev libffi-dev gcc musl-dev
 
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --upgrade pip && pip install --prefix=/install -r requirements.txt
 
+# Copy requirements.txt first to leverage Docker's cache.
+COPY requirements.txt .
+
+# Install dependencies into a separate directory
+RUN pip install --prefix=/install --no-cache-dir -r requirements.txt
+
+# Copy application code.
 COPY . .
 
-# Stage 2: Runtime
+# --- Stage 2: Runtime ---
+# Use the latest Python 3.10 Alpine image for the final, slimmed-down image.
 FROM python:3.10-alpine
 
+#FROM python:3.10-slim  AS builder
+
+# Install runtime dependencies. Note: no '-dev' packages here to keep the image small.
+# libpq is for connecting to PostgreSQL.
+# libffi is for the cryptography library.
+RUN apk add --no-cache libpq libffi
+
+# Copy installed Python packages from the builder stage into the runtime image.
 COPY --from=builder /install /usr/local
+
+# Copy the application code from the builder stage.
 COPY --from=builder /app /app
 
 WORKDIR /app
-CMD ["python", "main.py"]
+
+# Expose the port to the outside world for the application to be accessible.
+EXPOSE 8000
+
+# Run FastAPI app with Uvicorn.
+# Using the exec form of CMD is a best practice.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
