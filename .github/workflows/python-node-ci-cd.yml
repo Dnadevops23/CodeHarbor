@@ -1,0 +1,130 @@
+name: Python & Node CI/CD
+
+on:
+  push:
+    branches: [ main ]
+
+env:
+  REGISTRY: docker.io
+  DOCKERHUB_USER: ${{ secrets.DOCKER_USERNAME }}
+  DOCKERHUB_PASS: ${{ secrets.DOCKER_PASSWORD }}
+
+jobs:
+  detect-changes:
+    name: Detect Folder Changes
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.changes.outputs.backend }}
+      frontend: ${{ steps.changes.outputs.frontend }}
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Check which folders changed
+      id: changes
+      run: |
+        echo "backend=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep -q '^backend-python/' && echo true || echo false)" >> "$GITHUB_OUTPUT"
+        echo "frontend=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep -q '^frontend-node/' && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+  version:
+    needs: detect-changes
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Generate version tag
+      id: version
+      run: |
+        TAG=$(git rev-parse --short HEAD)
+        echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+  python-app:
+    needs: [version, detect-changes]
+    if: needs.detect-changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend-python
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.10
+
+    - name: Cache Python dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies & run tests
+      run: |
+        pip install -r requirements.txt
+        pytest
+
+    - name: Build Docker image (Python)
+      run: |
+        docker build -f Dockerfile.python -t $DOCKERHUB_USER/python-app:${{ needs.version.outputs.tag }} .
+        docker tag $DOCKERHUB_USER/python-app:${{ needs.version.outputs.tag }} $DOCKERHUB_USER/python-app:latest
+
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v2
+      with:
+        username: ${{ env.DOCKERHUB_USER }}
+        password: ${{ env.DOCKERHUB_PASS }}
+
+    - name: Push Docker image (Python)
+      run: |
+        docker push $DOCKERHUB_USER/python-app:${{ needs.version.outputs.tag }}
+        docker push $DOCKERHUB_USER/python-app:latest
+
+  node-app:
+    needs: [version, detect-changes]
+    if: needs.detect-changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend-node
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: 16
+
+    - name: Cache Node modules
+      uses: actions/cache@v3
+      with:
+        path: ~/.npm
+        key: ${{ runner.os }}-npm-${{ hashFiles('**/package-lock.json') }}
+        restore-keys: |
+          ${{ runner.os }}-npm-
+
+    - name: Install dependencies & run tests
+      run: |
+        npm ci
+        npm test
+
+    - name: Build Docker image (Node)
+      run: |
+        docker build -f Dockerfile.node -t $DOCKERHUB_USER/node-app:${{ needs.version.outputs.tag }} .
+        docker tag $DOCKERHUB_USER/node-app:${{ needs.version.outputs.tag }} $DOCKERHUB_USER/node-app:latest
+
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v2
+      with:
+        username: ${{ env.DOCKERHUB_USER }}
+        password: ${{ env.DOCKERHUB_PASS }}
+
+    - name: Push Docker image (Node)
+      run: |
+        docker push $DOCKERHUB_USER/node-app:${{ needs.version.outputs.tag }}
+        docker push $DOCKERHUB_USER/node-app:latest
